@@ -124,17 +124,18 @@ def make_daily_tracks():
 
             for column_no in dead_cols:
 
-                track = tracks_array[:day_num+1,column_no,:]
+                column_no = column_no[0]
 
                 # Find number of non-zero entries in array of x coords
-                track_length = np.count_nonzero(~np.isnan(track[0]))
 
-                if track_length > 2:
+                track_length = np.count_nonzero(~np.isnan(tracks_array[:day_num+1,column_no,0]))
+
+                if track_length > 5:
 
                     # Start day can be calculated from subtracting the number of extant days from day of death
                     start_day = day_num + 1 - track_length
 
-                    select_and_save_track(tracks_array[start_day:day_num+1,column_no,:],
+                    select_and_save_track(tracks_array[start_day:day_num+1,column_no,0],
                                           save_key,
                                           f'long_tracks_{hemisphere}h.h5')
 
