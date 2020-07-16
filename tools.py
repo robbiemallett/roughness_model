@@ -21,12 +21,15 @@ def get_vectors_for_year(data_dir,year,hemisphere):
 
     all_u, all_v = np.array(data_for_year['u']), np.array(data_for_year['v'])
 
-    all_u = np.ma.masked_where(all_u == -9999.0, all_u)
-    all_u = np.ma.filled(all_u, np.nan)
-    all_v = np.ma.masked_where(all_v == -9999.0, all_v)
-    all_v = np.ma.filled(all_v, np.nan)
+    velocities = np.stack((all_u, all_v), axis=3)
 
-    return(all_u, all_v)
+    velocities = np.ma.masked_where(velocities == -9999.0, velocities)
+    velocities = np.ma.filled(velocities, np.nan)
+
+    velocities = velocities/100 #Convert cm/s to m/s
+
+
+    return(velocities)
 
 def select_and_save_track(track, key, f_name):
 
@@ -45,44 +48,25 @@ def select_and_save_track(track, key, f_name):
     with h5py.File(f_name, 'a') as hf:
         hf[f't{key}'] = track
 
-def one_iteration(point, field, tree, timestep):
+def iterate_points(array,
+                   velocities_on_day,
+                   EASE_tree,
+                   timestep):
 
-    """Iterates a point based on its position in an ice motion field.
+    distances, indexs = EASE_tree.query(array)
 
-    Must be passed a pre-calculated KDTree of the field (which saves time). If the point's nearest velocity value is
-    nan (representing open water), then it returns a nan point (np.nan, np.nan)
+    velocities_of_interest = np.array([velocities_on_day[:,:,0].ravel()[indexs], velocities_on_day[:,:,1].ravel()[indexs]]).T
 
-    Args:
-        point: tuple of EASE grid xy coordinates
-        field: velocity field in cm/s
-        tree: pre-calculated KDTree of grid points of velocity field
-        timestep: time in seconds
+    displacements = velocities_of_interest * timestep
+    #
+    # print('mean displacement:')
+    # print(np.nanmean(velocities_of_interest))
 
-    Returns:
-        Tuple of floats representing xy coordinates of iterated point. If floe disappears then coords are np.nan.
+    new_positions = array + displacements
 
-    """
+    # exit()
 
-    distance, index = tree.query(point)
-
-    u_vels, v_vels = np.array(field['u']) / 100, np.array(field['v']) / 100
-
-    u_vels = np.ma.masked_where(u_vels == -99.99, u_vels)
-    u_vels = np.ma.masked_values(u_vels, np.nan)
-
-    u_vel, v_vel = u_vels.ravel()[index], v_vels.ravel()[index]
-
-    if np.isnan(u_vel):
-        #         print('Failed')
-        return ((np.nan, np.nan))
-
-    else:
-
-        u_disp, v_disp = u_vel * timestep, v_vel * timestep
-
-        new_position = (point[0] + u_disp, point[1] + v_disp)
-
-        return (new_position)
+    return (new_positions)
 
 
 def lonlat_to_xy(lon, lat, hemisphere, inverse=False):
