@@ -16,8 +16,9 @@ def make_daily_tracks():
     hemisphere = 'n'
     start_year = 2000
     no_years = 1
-    printer = True
-    save_file_name = f'long_tracks_Oct_testing_bccc.h5'
+    printer = False
+    save_file_name = f'long_tracks_Oct_testing_bcccz.h5'
+    divergence_trigger_check=True
 
 
     ################################################################################
@@ -167,9 +168,7 @@ def make_daily_tracks():
 
             if printer: print(f'Tracks added: {new_track_initialisations.shape[0]}')
 
-            div_checking = 1
-
-            if div_checking:
+            if divergence_trigger_check:
 
                 additional_array = mark_divergence_triggering(additional_array,
                                                               x_index,
@@ -189,20 +188,10 @@ def make_daily_tracks():
             day_num +=1
 
 
+    now = datetime.datetime.now()
+    current_time = now.strftime("%H:%M:%S")
+    print("End Time =", current_time)
 
-    # np.save(f'{output_dir}tracks_array_{hemisphere}h_{year}.npy', tracks_array)
-    #
-    # for track_no in tqdm.trange(tracks_array.shape[2]):
-    #     track = tracks_array[:, :, track_no]
-    #
-    #     select_and_save_track(track,
-    #                           track_no,
-    #                           f'{output_dir}tracks_{hemisphere}h_{year}.h5')
-    #
-    # now = datetime.datetime.now()
-    # current_time = now.strftime("%H:%M:%S")
-    # print("End Time =", current_time)
-    #
 
 if __name__ == '__main__':
     make_daily_tracks()
