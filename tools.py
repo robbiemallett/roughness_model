@@ -45,7 +45,7 @@ def mark_divergence_triggering(additional_array,
 
     div_driven_nan_inf_array = np.array([div_driven_nan_inf, div_driven_nan_inf])
 
-    additional_array[day_num, :, :] = div_driven_nan_inf_array
+    additional_array[day_num, :, :] = div_driven_nan_inf_array.T
 
     return(additional_array)
 
