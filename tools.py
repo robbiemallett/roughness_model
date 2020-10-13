@@ -14,6 +14,84 @@ def get_EASE_grid():
 
     return(lons, lats)
 
+def mark_divergence_triggering(additional_array,
+                              x_index,
+                              u_field,
+                              distance,
+                              dist_threshold,
+                              velocities,
+                              doy,
+                              day_num,
+                              EASE_lons):
+
+    valid_grid_index = x_index[0][~np.isnan(u_field)]
+
+    # Get the index of these points
+    new_track_indices = valid_grid_index[distance > dist_threshold]
+
+    unraveled_indices = np.unravel_index(new_track_indices, EASE_lons.shape)
+    if doy == 0:
+        u_data_for_previous = velocities[doy, :, :, 0]
+    else:
+        u_data_for_previous = velocities[doy - 1, :, :, 0]
+
+    values_for_previous = u_data_for_previous[unraveled_indices]
+
+    # If the values are not nan, then the track is divergence-triggered
+
+    div_driven_bools = ~np.isnan(values_for_previous)
+
+    div_driven_nan_inf = [np.inf if x else np.nan for x in div_driven_bools]
+
+    div_driven_nan_inf_array = np.array([div_driven_nan_inf, div_driven_nan_inf])
+
+    additional_array[day_num, :, :] = div_driven_nan_inf_array
+
+    return(additional_array)
+
+
+def remove_dead_tracks(tracks_array,
+                       save_key,
+                       day_num,
+                       start_days,
+                       save_file_name,
+                       printer):
+
+    dead_cols = [index[0] for index in np.argwhere(np.isnan(tracks_array[day_num + 1, :, 0]))]
+
+    # deadcols is a list of column indexes that have died.
+
+    # Save dead tracks
+
+    for column_no in dead_cols:
+
+        # Find number of non-zero entries in array of x coords
+
+        track_length = np.count_nonzero(~np.isnan(tracks_array[:, column_no, 0]))
+
+        if track_length > 5:
+            # Start day can be calculated from subtracting the number of extant days from day of death
+            start_day = day_num - track_length
+
+            # Until recently the function below was only saving x coords.
+
+            select_and_save_track(tracks_array[start_day:day_num + 1, column_no, :],
+                                  save_key,
+                                  save_file_name)
+
+            start_days[save_key] = {'start_day': start_day,
+                                    'day_num': day_num}
+
+            save_key += 1
+
+    # Remove dead tracks
+
+    tracks_array = np.delete(tracks_array, dead_cols, axis=1)
+
+    if printer: print(f'Tracks killed: {len(dead_cols)}')
+
+    return(tracks_array, save_key, start_days)
+
 
 def get_vectors_for_year(data_dir,year,hemisphere):
 
@@ -58,13 +136,8 @@ def iterate_points(array,
     velocities_of_interest = np.array([velocities_on_day[:,:,0].ravel()[indexs], velocities_on_day[:,:,1].ravel()[indexs]]).T
 
     displacements = velocities_of_interest * timestep
-    #
-    # print('mean displacement:')
-    # print(np.nanmean(velocities_of_interest))
 
     new_positions = array + displacements
-
-    # exit()
 
     return (new_positions)
 

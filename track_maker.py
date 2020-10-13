@@ -2,27 +2,25 @@ from netCDF4 import Dataset
 import datetime
 from scipy.spatial import KDTree
 import numpy as np
-from tools import select_and_save_track, get_vectors_for_year, get_EASE_grid, iterate_points
+from tools import get_vectors_for_year, get_EASE_grid, iterate_points,\
+    remove_dead_tracks, mark_divergence_triggering
 from tqdm import trange
 from tools import lonlat_to_xy
 import pickle
 
 
 def make_daily_tracks():
-    """ Makes tracks from daily ice motion vectors
-
-    Script is run from the command line: e.g. python3 main.py 2016 n (for northern hemisphere winter 2016/17). If the
-    script isn't run from the command line (for testing, playing), it's automatically configured for 2016 n.
-
-    Returns:
-        Nothing (saves file).
-    """
 
     dist_threshold = 25000
     res_factor = 1
     hemisphere = 'n'
     start_year = 2000
-    no_years = 17
+    no_years = 1
+    printer = True
+    save_file_name = f'long_tracks_Oct_testing_bccc.h5'
+
+
+    ################################################################################
 
     now = datetime.datetime.now()
     current_time = now.strftime("%H:%M:%S")
@@ -39,8 +37,14 @@ def make_daily_tracks():
 
     start_x, start_y = EASE_xs.ravel()[::res_factor], EASE_ys.ravel()[::res_factor]
 
+    x_index = np.indices(EASE_lons.ravel()[::res_factor].shape)
 
     # Get dataset for first year
+
+    # This is a 365x361x361x2 array
+    # 0 axis is time
+    # 1 & 2 axes are ease grid
+    # 3 axis just has length two, 0 for u vectors, 1 for v vecotrs
 
     velocities = get_vectors_for_year(data_dir = '/home/robbie/Dropbox/Data/IMV/',
                                         year = start_year,
@@ -50,17 +54,22 @@ def make_daily_tracks():
 
     # Initialise day 1
 
+    # Select first row (day 1), and x and y slices
+
     data_for_start_day = {'u': velocities[0,:,:,0],
                           'v': velocities[0,:,:,1]}
 
     u_field = data_for_start_day['u'].ravel()[::res_factor]
 
-    # Select points on ease grid with valid velocity data on day 0
+    # Select points on ease grid with valid u velocity data on day 0
 
     valid_start_x = start_x[~np.isnan(u_field)]
     valid_start_y = start_y[~np.isnan(u_field)]
 
-    tracks_array = np.full((velocities.shape[0]+50, valid_start_x.shape[0], 2), np.nan)
+    tracks_array = np.full((velocities.shape[0]+50,
+                            valid_start_x.shape[0],
+                            2), # Space for x and y coords
+                           np.nan)
 
     tracks_array[0, :, 0] = valid_start_x
     tracks_array[0, :, 1] = valid_start_y
@@ -72,6 +81,7 @@ def make_daily_tracks():
     day_num = 0
 
     for year in range(start_year, start_year + no_years):
+        print(year)
 
         if year != start_year: #We've already initialised using start_year data, no need to do it again
 
@@ -92,7 +102,7 @@ def make_daily_tracks():
 
         for doy in trange(0, days_in_year):
 
-            print(f'Day_num: {day_num}, Extant tracks: {tracks_array.shape[1]}')
+            if printer: print(f'Day_num: {day_num}, Extant tracks: {tracks_array.shape[1]}')
 
             # Get the ice motion field for that day
 
@@ -102,11 +112,6 @@ def make_daily_tracks():
 
             timestep = 24 * 60 * 60
 
-            # Here I want to feed tracks_array[:,day_num,:]
-            # I want to recieve a 2d array that gets put into tracks_array[: day_num +1, :]
-
-            # First step is to put all this inside one_iteration function
-
             updated_points = iterate_points(tracks_array[day_num,:, :],
                                                velocities[doy],
                                                EASE_tree,
@@ -114,50 +119,25 @@ def make_daily_tracks():
 
             # Save these updated points to the numpy array
 
-            tracks_array[day_num+1,:,:] = updated_points
+            tracks_array[day_num + 1, :, :] = updated_points
 
             # Identify index of dead tracks
 
-            dead_cols = np.argwhere(np.isnan(tracks_array[day_num+1,:,0]))
+            # Take the x coordinates of tracks_array for the day and look at ones where there's a nan
 
-            # Save dead tracks
-
-            for column_no in dead_cols:
-
-                column_no = column_no[0]
-
-                # Find number of non-zero entries in array of x coords
-
-                track_length = np.count_nonzero(~np.isnan(tracks_array[:day_num+1,column_no,0]))
-
-                if track_length > 5:
-
-                    # Start day can be calculated from subtracting the number of extant days from day of death
-                    start_day = day_num + 1 - track_length
-
-                    select_and_save_track(tracks_array[start_day:day_num+1,column_no,0],
-                                          save_key,
-                                          f'long_tracks_{hemisphere}h.h5')
-
-                    start_days[save_key] = (start_day,day_num)
-
-                    save_key+=1
-
-
-            # Remove dead tracks
-
-            tracks_array = np.delete(tracks_array, dead_cols, axis=1)
-
-            # Make list of points that are still alive
-
-            print(f'Tracks killed: {len(dead_cols)}')
+            tracks_array, save_key, start_days = remove_dead_tracks(tracks_array,
+                                                                    save_key,
+                                                                    day_num,
+                                                                    start_days,
+                                                                    save_file_name,
+                                                                    printer)
 
             # Create new parcels in gaps
             # Make a decision tree for the track field
 
             # Identify all points of ease_grid with valid values
 
-            u_field = np.ma.masked_values(u_data_for_day.ravel()[::res_factor], np.nan)
+            u_field = u_data_for_day.ravel()[::res_factor]
 
             valid_grid_points = np.array([start_x[~np.isnan(u_field)],
                                           start_y[~np.isnan(u_field)]]).T
@@ -165,26 +145,46 @@ def make_daily_tracks():
 
             # Iterate through all valid points to identify gaps using the tree
 
-            if tracks_array.shape[2]:
+            # if tracks_array.shape[2]: # Seems like this is always true - test code without?
 
-                track_tree = KDTree(tracks_array[day_num+1,:,:])
+            track_tree = KDTree(tracks_array[day_num+1,:,:])
 
 
-                distance, index = track_tree.query(valid_grid_points)
+            distance, index = track_tree.query(valid_grid_points)
 
-                # Select rows of valid_grid_points where corresponding value in distance array is > dist_threshold
+            # Select rows of valid_grid_points where corresponding value in distance array is > dist_threshold
 
-                new_track_initialisations = valid_grid_points[distance>dist_threshold]
+            # A parcel is 'divergence driven' if it's created at an EASE cell where there was also a vector the
+            # previous day. Otherwise it's due to creation at the ice edge.
 
-                print(f'Tracks added: {new_track_initialisations.shape[0]}')
+            # Remember 'valid_grid_points' is a 2D array of all x, y coordinates that have valid values on daynum
 
-                # Add newly intitiated tracks to other tracks
+            new_track_initialisations = valid_grid_points[distance>dist_threshold]
 
-                additional_array = np.full((tracks_array.shape[0], new_track_initialisations.shape[0], 2), np.nan)
+            additional_array = np.full((tracks_array.shape[0], new_track_initialisations.shape[0], 2), np.nan)
 
-                additional_array[day_num+1,:,:] = new_track_initialisations
+            additional_array[day_num+1,:,:] = new_track_initialisations
 
-                tracks_array = np.concatenate((tracks_array, additional_array), axis = 1)
+            if printer: print(f'Tracks added: {new_track_initialisations.shape[0]}')
+
+            div_checking = 1
+
+            if div_checking:
+
+                additional_array = mark_divergence_triggering(additional_array,
+                                                              x_index,
+                                                              u_field,
+                                                              distance,
+                                                              dist_threshold,
+                                                              velocities,
+                                                              doy,
+                                                              day_num,
+                                                              EASE_lons)
+
+
+            # Add newly intitiated tracks to other tracks
+
+            tracks_array = np.concatenate((tracks_array, additional_array), axis = 1)
 
             day_num +=1
 
