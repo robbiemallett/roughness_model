@@ -1,4 +1,4 @@
-from pyproj import Proj, transform
+from pyproj import Transformer
 from netCDF4 import Dataset
 import numpy as np
 import h5py
@@ -13,6 +13,24 @@ def get_EASE_grid():
     lats = np.array(data['latitude'])
 
     return(lons, lats)
+
+def kill_empty_rows(tracks_array):
+
+    shape_before = tracks_array.shape
+
+    tracks_array = tracks_array[~np.isnan(tracks_array).any(axis=(1, 2, 3))]
+
+    num_rows_deleted = shape_before[0] - tracks_array.shape[0]
+
+    return(tracks_array, num_rows_deleted)
+
+def extend_tracks_array(tracks_array, velocities):
+
+    time_booster = np.full((velocities.shape[0], tracks_array.shape[1], velocities.shape[3]), np.nan)
+
+    tracks_array = np.concatenate((tracks_array, time_booster), axis=0)
+
+    return(tracks_array)
 
 def mark_divergence_triggering(additional_array,
                               x_index,
@@ -43,7 +61,7 @@ def mark_divergence_triggering(additional_array,
 
     div_driven_nan_inf = [np.inf if x else np.nan for x in div_driven_bools]
 
-    div_driven_nan_inf_array = np.array([div_driven_nan_inf, div_driven_nan_inf])
+    div_driven_nan_inf_array = np.array([div_driven_nan_inf, div_driven_nan_inf, div_driven_nan_inf])
 
     additional_array[day_num, :, :] = div_driven_nan_inf_array.T
 
@@ -92,20 +110,37 @@ def remove_dead_tracks(tracks_array,
 
     return(tracks_array, save_key, start_days)
 
+def calculate_div_from_velocities(velocities):
 
-def get_vectors_for_year(data_dir,year,hemisphere):
+    dudx = np.gradient(velocities[:,:,:,0], axis=1)
+
+    dvdy = np.gradient(velocities[:,:,:,1], axis=2)
+
+    div = np.add(dudx,dvdy)
+
+    return(div)
+
+
+def get_vectors_for_year(data_dir,year,hemisphere,make_divergence_series):
 
     data_for_year = Dataset(f'{data_dir}icemotion_daily_{hemisphere}h_25km_{year}0101_{year}1231_v4.1.nc')
 
     all_u, all_v = np.array(data_for_year['u']), np.array(data_for_year['v'])
 
-    velocities = np.stack((all_u, all_v), axis=3)
+    if make_divergence_series:
+        velocities = np.stack((all_u, all_v, all_u), axis=3)
+    else:
+        velocities = np.stack((all_u, all_v), axis=3)
 
     velocities = np.ma.masked_where(velocities == -9999.0, velocities)
     velocities = np.ma.filled(velocities, np.nan)
-
     velocities = velocities/100 #Convert cm/s to m/s
 
+    if make_divergence_series:
+
+        div = calculate_div_from_velocities(velocities)
+
+        velocities[:,:,:,2] = div
 
     return(velocities)
 
@@ -126,24 +161,43 @@ def select_and_save_track(track, key, f_name):
     with h5py.File(f_name, 'a') as hf:
         hf[f't{key}'] = track
 
+    return 0
+
 def iterate_points(array,
                    velocities_on_day,
                    EASE_tree,
-                   timestep):
+                   timestep,
+                   make_divergence_series):
 
-    distances, indexs = EASE_tree.query(array)
 
-    velocities_of_interest = np.array([velocities_on_day[:,:,0].ravel()[indexs], velocities_on_day[:,:,1].ravel()[indexs]]).T
+    distances, indexs = EASE_tree.query(array[:,:2])
 
-    displacements = velocities_of_interest * timestep
+    if make_divergence_series:
 
-    new_positions = array + displacements
+        velocities_of_interest = np.array([velocities_on_day[:, :, 0].ravel()[indexs],
+                                           velocities_on_day[:, :, 1].ravel()[indexs],
+                                           velocities_on_day[:, :, 2].ravel()[indexs]]).T
+
+
+        displacements = velocities_of_interest * timestep
+
+        new_positions = array + displacements
+
+        new_positions[:,2] = velocities_of_interest[:,2]
+
+
+    else:
+        velocities_of_interest = np.array([velocities_on_day[:,:,0].ravel()[indexs],
+                                           velocities_on_day[:,:,1].ravel()[indexs]]).T
+
+        displacements = velocities_of_interest * timestep
+
+        new_positions = array + displacements
 
     return (new_positions)
 
 
-def lonlat_to_xy(lon, lat, hemisphere, inverse=False):
-
+def lonlat_to_xy(coords_1, coords_2, hemisphere, inverse=False):
     """Converts between longitude/latitude and EASE xy coordinates.
 
     Args:
@@ -156,18 +210,29 @@ def lonlat_to_xy(lon, lat, hemisphere, inverse=False):
         tuple: pair of xy or lon/lat values
     """
 
-    EASE_Proj_n = Proj(init='epsg:3408')
-    EASE_Proj_s = Proj(init='epsg:3409')
-    WGS_Proj = Proj(init='epsg:4326')
+    EASE_Proj = {'n': 'epsg:3408',
+                 's': 'epsg:3409'}
 
-    EASE_Proj = {'n': EASE_Proj_n,
-                 's': EASE_Proj_s}
+    WGS_Proj = 'epsg:4326'
 
-    if inverse == False:
-        x, y = transform(WGS_Proj, EASE_Proj[hemisphere], lon, lat)
+    if inverse == False:  # lonlat to xy
+
+        lon, lat = coords_1, coords_2
+
+        transformer = Transformer.from_crs(WGS_Proj, EASE_Proj[hemisphere])
+
+        x, y = transformer.transform(lat, lon)
+
         return (x, y)
 
-    else:
-        x, y = transform(EASE_Proj[hemisphere], WGS_Proj, lon, lat)
-        return (x, y)
+    else:  # xy to lonlat
+
+        x, y = coords_1, coords_2
+
+        transformer = Transformer.from_crs(EASE_Proj[hemisphere], WGS_Proj)
+
+        lat, lon = transformer.transform(x, y)
+
+        return (lon, lat)
+
 
